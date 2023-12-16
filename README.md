@@ -9,6 +9,7 @@ In every module folder you will find the schematic and the application report.
 I include a licence file to specify the rights when you download and use any file.
 
 ## Module Folders
+Module 6 - Dual Mosfet On-Off Switch
 
 
 ## © 2020-2023 Marcos Buydid. All Rigths Reserved

@@ -11,5 +11,7 @@ I include a licence file to specify the rights when you download and use any fil
 ## Module Folders
 Module 6 - Dual Mosfet On-Off Switch
 
+Module 5 - Smart Fan Temperature Controller
+
 
 ## © 2020-2023 Marcos Buydid. All Rigths Reserved

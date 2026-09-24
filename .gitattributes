@@ -1,0 +1,10 @@
+  /Module_1 export-ignore
+  /Module_2 export-ignore
+  /Module_3 export-ignore
+  /Module_4 export-ignore
+  /Module_6 export-ignore
+  /DC*Diagram.pdf export-ignore
+  /README.md export-ignore
+  /Module_5/*.pdf export-ignore
+  /Module_5/*.xlsx export-ignore
+  /.gitattributes export-ignore

@@ -15,7 +15,7 @@
 // -----Build Options ---------------------------------------------------------------------------
 
 // Set 0 for production, 1 for debug.
-// On debug, raw ADC averages and results are printed.
+// In debug builds, raw ADC averages and results are printed.
 #define DEBUG_FLAG 0
 
 // -----Pin Definitions -------------------------------------------------------------------------
@@ -48,7 +48,7 @@ constexpr uint8_t UNUSED_PINS[] = { 2, 4, 6, A4, A5 };
 // Calibrated counts-per-volt for the external AREF (MAX6250, 4.999 V).
 // Nominal value is 1023 / 4.999 = 204.64, 204.7 is the calibrated value.
 // All voltage and current calibration below was measured with 204.7.
-constexpr float ADC_COUNTS_PER_VOLT   = 204.7f;
+constexpr float ADC_COUNTS_PER_VOLT = 204.7f;
 constexpr float ADC_FULL_SCALE_COUNTS = 1023.0f;
 
 // Reads thrown away after switching the ADC multiplexer to a new channel.
@@ -151,14 +151,14 @@ const uint16_t CURRENT_TO_VOLTAGE_TABLE_MV[] PROGMEM = {
 
 constexpr uint16_t CURRENT_TO_VOLTAGE_TABLE_SIZE =
   sizeof(CURRENT_TO_VOLTAGE_TABLE_MV) / sizeof(CURRENT_TO_VOLTAGE_TABLE_MV[0]);
-constexpr uint16_t CURRENT_TO_VOLTAGE_TABLE_LAST = CURRENT_TO_VOLTAGE_TABLE_SIZE - 1;
+constexpr uint16_t CURRENT_TO_VOLTAGE_TABLE_LAST_INDEX = CURRENT_TO_VOLTAGE_TABLE_SIZE - 1;
 static_assert(CURRENT_TO_VOLTAGE_TABLE_SIZE == 501, "Current to voltage table must have 501 entries");
 
 // -----REF02AP voltage reference temperature protection -----------------------------------------
 
-// The TEMP pin output about 0.630 V at 25°C and about 0.690 V at 60°C.
-// The IC is rated to 85°C. Alert threshold is set on 0.680 V (about 54°C) and turns off
-// below 0.670 V (about 48°C)
+// The TEMP pin outputs about 0.630 V at 25°C and about 0.690 V at 60°C.
+// The IC is rated to 85°C. Alert threshold is set at 0.680 V (about 54°C) and turns off
+// below 0.670 V (about 48°C).
 constexpr float VREF_TEMPERATURE_ALERT_ON_V = 0.680f;
 constexpr float VREF_TEMPERATURE_ALERT_OFF_V = 0.670f;
 
@@ -167,7 +167,7 @@ static_assert(VREF_TEMPERATURE_ALERT_OFF_V < VREF_TEMPERATURE_ALERT_ON_V,
 
 // -----Timing and display -----------------------------------------------------------------------
 
-constexpr uint16_t REFRESH_MEASUREMENT_PERIOD_MS = 560;
+constexpr uint16_t MEASUREMENT_PERIOD_MS = 560;
 constexpr uint16_t SPLASH_SCREEN_DURATION_MS = 2000;
 constexpr uint8_t  LCD_COLUMNS = 16;
 constexpr uint8_t  LCD_ROWS = 2;
@@ -209,29 +209,33 @@ LiquidCrystal lcd(LCD_RS_PIN, LCD_EN_PIN, LCD_D4_PIN, LCD_D5_PIN, LCD_D6_PIN, LC
 uint32_t lastMeasurementMs = 0;
 bool     vRefTemperatureAlertActive = false;
 
-// Reset cause, captured before main() runs (see captureResetFlags).
+#if DEBUG_FLAG
+uint32_t debugCycleCount = 0;   // measurement cycles since reset; printed on every debug line
+#endif
+
+// Reset cause, captured before main() runs (see captureResetFlagsAndDisableWatchdog).
 uint8_t resetFlags __attribute__((section(".noinit")));
 
 // -----Function signatures ------------------------------------------------------------------------
 
-void captureResetFlags() __attribute__((naked, used, section(".init3")));
+void captureResetFlagsAndDisableWatchdog() __attribute__((naked, used, section(".init3")));
 uint8_t generateSampleJitterUs();
 float readAdcAverage(uint8_t pin, uint8_t sampleCount);
 bool isAdjacentStep(int16_t newStep, int16_t lastStep);
 Reading computeVoltage(float adcAverage, int16_t &lastStep);
 float getVoltageFromTableMv(uint16_t index);
-int16_t findNearestCurrentStep(float voltageSenseMv);
+int16_t findNearestCurrentStep(float currentSenseMv);
 Reading computeCurrent(float adcAverage, int16_t &lastStep);
-bool shouldVRefTemperatureAlertBeActive(bool alertActive, float temperatureVoltage);
-void calculateChannelMeasurements(Channel &channel);
+bool shouldVRefTemperatureAlertBeActive(bool alertActive, float vRefTemperatureVoltage);
+void calculateAndDisplayChannelMeasurements(Channel &channel);
 void performMeasurementsOnChannels();
 void updateVRefTemperatureAlertState();
 void resetChannelsHysteresis();
 void formatChannelRow(char *row, const Reading &voltage, const Reading &current);
 void showSplashScreen();
-void showTemperatureAlert();
+void showVRefTemperatureAlert();
 #if DEBUG_FLAG
-void printTemperatureDebugOutput(float temperatureVoltage);
+void printTemperatureDebugOutput(float vRefTemperatureVoltage);
 void printChannelDebugOutput(const Channel &channel, float voltageAdc, float currentAdc,
                              const Reading &voltage, const Reading &current);
 #endif
@@ -243,7 +247,7 @@ void printChannelDebugOutput(const Channel &channel, float voltageAdc, float cur
 // disabled here, before the 2 s splash screen, or the board resets again.
 // Optiboot may clear MCUSR before this code runs; the reset cause then
 // reads 0, but the watchdog is still disabled safely.
-void captureResetFlags() {
+void captureResetFlagsAndDisableWatchdog() {
   resetFlags = MCUSR;
   MCUSR = 0;
   wdt_disable();
@@ -303,7 +307,7 @@ void loop() {
   wdt_reset();
 
   const uint32_t now = millis();
-  if (now - lastMeasurementMs < REFRESH_MEASUREMENT_PERIOD_MS) {
+  if (now - lastMeasurementMs < MEASUREMENT_PERIOD_MS) {
     return;
   }
   lastMeasurementMs = now;
@@ -326,6 +330,10 @@ void showSplashScreen() {
 
 void performMeasurementsOnChannels() {
 
+#if DEBUG_FLAG
+  debugCycleCount++;
+#endif
+
   updateVRefTemperatureAlertState();
 
   if (vRefTemperatureAlertActive) {
@@ -333,16 +341,16 @@ void performMeasurementsOnChannels() {
   }
 
   for (uint8_t i = 0; i < CHANNEL_COUNT; i++) {
-    calculateChannelMeasurements(channels[i]);
+    calculateAndDisplayChannelMeasurements(channels[i]);
   }
 }
 
 void updateVRefTemperatureAlertState() {
-  const float temperatureVoltage =
+  const float vRefTemperatureVoltage =
     readAdcAverage(VREF_TEMPERATURE_PIN, TEMPERATURE_OVERSAMPLE_COUNT) / ADC_COUNTS_PER_VOLT;
 
   const bool newAlertState =
-    shouldVRefTemperatureAlertBeActive(vRefTemperatureAlertActive, temperatureVoltage);
+    shouldVRefTemperatureAlertBeActive(vRefTemperatureAlertActive, vRefTemperatureVoltage);
 
   if (newAlertState != vRefTemperatureAlertActive) {
     vRefTemperatureAlertActive = newAlertState;
@@ -351,13 +359,13 @@ void updateVRefTemperatureAlertState() {
     resetChannelsHysteresis();
 
     if (newAlertState) {
-      showTemperatureAlert();
+      showVRefTemperatureAlert();
     } else {
       lcd.clear();
     }
   }
 #if DEBUG_FLAG
-  printTemperatureDebugOutput(temperatureVoltage);
+  printTemperatureDebugOutput(vRefTemperatureVoltage);
 #endif
 }
 
@@ -368,7 +376,7 @@ void resetChannelsHysteresis() {
   }
 }
 
-void calculateChannelMeasurements(Channel &channel) {
+void calculateAndDisplayChannelMeasurements(Channel &channel) {
   const float voltageAdc = readAdcAverage(channel.voltagePin, MEASUREMENT_OVERSAMPLE_COUNT);
   const float currentAdc = readAdcAverage(channel.currentPin, MEASUREMENT_OVERSAMPLE_COUNT);
 
@@ -452,14 +460,14 @@ uint8_t generateSampleJitterUs() {
   return state & SAMPLE_JITTER_MASK_US;
 }
 
-bool shouldVRefTemperatureAlertBeActive(bool alertActive, float temperatureVoltage) {
+bool shouldVRefTemperatureAlertBeActive(bool alertActive, float vRefTemperatureVoltage) {
   if (alertActive) {
-    return temperatureVoltage >= VREF_TEMPERATURE_ALERT_OFF_V; //return true or false
+    return vRefTemperatureVoltage >= VREF_TEMPERATURE_ALERT_OFF_V;
   }
-  return temperatureVoltage >= VREF_TEMPERATURE_ALERT_ON_V;
+  return vRefTemperatureVoltage >= VREF_TEMPERATURE_ALERT_ON_V;
 }
 
-void showTemperatureAlert() {
+void showVRefTemperatureAlert() {
   lcd.clear();
   lcd.setCursor(4, 0);
   lcd.print(F("VREF-TEMP"));
@@ -498,13 +506,13 @@ Reading computeVoltage(float adcAverage, int16_t &lastStep) {
   return { step * VOLTAGE_STEP_MV / 1000.0f, ReadingStatus::Valid };
 }
 
-int16_t findNearestCurrentStep(float voltageSenseMv) {
-  uint16_t low  = 0; // invariant: table[low] <= voltageSenseMv
-  uint16_t high = CURRENT_TO_VOLTAGE_TABLE_LAST; // invariant: table[high] >= voltageSenseMv
+int16_t findNearestCurrentStep(float currentSenseMv) {
+  uint16_t low  = 0; // invariant: table[low] <= currentSenseMv
+  uint16_t high = CURRENT_TO_VOLTAGE_TABLE_LAST_INDEX; // invariant: table[high] >= currentSenseMv
 
   while (high - low > 1) {
     const uint16_t mid = low + (high - low) / 2;
-    if (getVoltageFromTableMv(mid) <= voltageSenseMv) {
+    if (getVoltageFromTableMv(mid) <= currentSenseMv) {
       low = mid;
     } else {
       high = mid;
@@ -512,14 +520,14 @@ int16_t findNearestCurrentStep(float voltageSenseMv) {
   }
 
   const float midpointMv = (getVoltageFromTableMv(low) + getVoltageFromTableMv(high)) * 0.5f;
-  return (voltageSenseMv < midpointMv) ? low : high;
+  return (currentSenseMv < midpointMv) ? low : high;
 }
 
 // Converts an averaged current-channel ADC value into load current.
 Reading computeCurrent(float adcAverage, int16_t &lastStep) {
   const float currentSenseMv = (adcAverage / ADC_COUNTS_PER_VOLT) * 1000.0f;
 
-  if (currentSenseMv > getVoltageFromTableMv(CURRENT_TO_VOLTAGE_TABLE_LAST)) {
+  if (currentSenseMv > getVoltageFromTableMv(CURRENT_TO_VOLTAGE_TABLE_LAST_INDEX)) {
     lastStep = NO_STEP; // above 5.00 A: outside the calibrated range
     return { 0.0f, ReadingStatus::OverRange };
   }
@@ -558,7 +566,7 @@ void formatChannelRow(char *row, const Reading &voltage, const Reading &current)
   if (voltage.status == ReadingStatus::OverRange) {
     memcpy_P(&row[0], PSTR("    OL"), 6);
   } else {
-    dtostrf(voltage.value, 6, 3, field); // Example "5.030" or "12.030"
+    dtostrf(voltage.value, 6, 3, field); // Example " 5.030" or "12.030"
     memcpy(&row[0], field, 6);
     row[6] = 'V';
   }
@@ -578,22 +586,27 @@ bool isAdjacentStep(int16_t newStep, int16_t lastStep) {
 
 // Debug output example
 // Each measurement cycle prints one temperature line
-// followed by one line per channel:
-// t=2104ms VREF_TEMP=0.645V
-// CH1 vAdc=611.00 iAdc=131.60 V=12.030 I=0.720
-// CH2 vAdc=254.00 iAdc=0.00 V=5.030 I=0.000
+// followed by one line per channel.
+// All lines start with the cycle number:
+// #42 t=2104ms VREF_TEMP=0.645V
+// #42 CH1 vAdc=611.00 iAdc=131.60 V=12.030 I=0.720
+// #42 CH2 vAdc=254.00 iAdc=0.00 V=5.020 I=0.000
 #if DEBUG_FLAG
-void printTemperatureDebugOutput(float temperatureVoltage) {
-  Serial.print(F("t="));
+void printTemperatureDebugOutput(float vRefTemperatureVoltage) {
+  Serial.print('#');
+  Serial.print(debugCycleCount);
+  Serial.print(F(" t="));
   Serial.print(millis());
   Serial.print(F("ms VREF_TEMP="));
-  Serial.print(temperatureVoltage, 3);
+  Serial.print(vRefTemperatureVoltage, 3);
   Serial.println(vRefTemperatureAlertActive ? F("V ALERT") : F("V"));
 }
 
 void printChannelDebugOutput(const Channel &channel, float voltageAdc, float currentAdc,
                              const Reading &voltage, const Reading &current) {
-  Serial.print(F("CH"));
+  Serial.print('#');
+  Serial.print(debugCycleCount);
+  Serial.print(F(" CH"));
   Serial.print(channel.number);
   Serial.print(F(" vAdc=")); Serial.print(voltageAdc, 2);
   Serial.print(F(" iAdc=")); Serial.print(currentAdc, 2);

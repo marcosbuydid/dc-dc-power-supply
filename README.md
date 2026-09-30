@@ -22,4 +22,4 @@ Module 5 - Smart Fan Temperature Controller
 
 Module 6 - Dual Mosfet On-Off Switch
 
-## Copyright © 2020-2024 Marcos Buydid
+## Copyright © 2020-2026 Marcos Buydid
